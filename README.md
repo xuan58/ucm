@@ -114,9 +114,6 @@ In addition, we provide cross-layer similarity heatmaps for multiple models, spl
 
 #### Qwen Models
 
-##### Qwen3-4B
-![Qwen3-4B cross-layer similarity heatmap](docs/figures/qwen3-4B.png)
-
 ##### Qwen3-32B
 ![Qwen3-32B cross-layer similarity heatmap](docs/figures/qwen3-32B.png)
 
