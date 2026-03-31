@@ -86,3 +86,37 @@ please refer to [Quick Start for vLLM](https://ucm.readthedocs.io/en/latest/gett
 
 ---
 
+## Attention Analysis Figures
+
+We statistically analyze the attention-score distributions across all 61 layers of DeepSeek-R1.
+We also evaluate, on Needle-in-a-Haystack and LongBench v2 (code), the token ratio required to reach 90% cumulative attention score.
+In addition, we provide cross-layer similarity heatmaps for multiple models, split into the DeepSeek family and the Qwen family.
+
+### 1) DeepSeek-R1: Attention Distribution Across 61 Layers
+
+![DeepSeek-R1 61 layers attention distribution](docs/figures/DSR1-61layers.png)
+
+### 2) 90% Cumulative Attention Token Ratio
+
+#### Needle-in-a-Haystack
+
+![Needle 90% cumulative attention token ratio](docs/figures/needle.png)
+
+#### LongBench v2 (code)
+
+![LongBench v2 code 90% cumulative attention token ratio](docs/figures/longbenchv2_code.png)
+
+### 3) Cross-Layer Similarity Heatmaps
+
+#### DeepSeek Family
+
+![DeepSeek-R1 cross-layer similarity heatmap](docs/figures/DSR1.png)
+
+#### Qwen Family
+
+![Qwen3-4B cross-layer similarity heatmap](docs/figures/qwen3-4B.png)
+![Qwen3-32B cross-layer similarity heatmap](docs/figures/qwen3-32B.png)
+![Qwen3-Coder cross-layer similarity heatmap](docs/figures/qwen3-coder.png)
+
+---
+
