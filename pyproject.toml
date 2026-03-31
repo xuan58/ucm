@@ -1,0 +1,18 @@
+[build-system]
+requires = [
+    "setuptools>=64",
+    "cmake>=3.18",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uc-manager"
+authors = [{name = "Anonymous"}]
+readme = "README.md"
+description = "Persist and reuse KV Cache to speedup your LLM."
+requires-python = ">=3.10"
+dynamic = [ "version", "dependencies", "optional-dependencies"]
+
+[project.urls]
+Documentation="https://ucm.readthedocs.io/en/latest"

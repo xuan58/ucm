@@ -1,0 +1,327 @@
+name: 'Pull Request Gate'
+
+on:
+  pull_request:
+    branches: [ "dev*", "main", "*release", "feature*" ]
+
+jobs:
+  pre-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - id: fetch_base_and_pr_branches
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git fetch origin ${{ github.base_ref }}
+
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "PR is from a fork, adding remote."
+            git remote add fork ${{ github.event.pull_request.head.repo.clone_url }}
+            git fetch fork $HEAD_REF
+            HEAD_BRANCH_NAME=fork/$HEAD_REF
+            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+          else
+            git fetch origin $HEAD_REF
+            HEAD_BRANCH_NAME=origin/$HEAD_REF
+            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+          fi
+
+      # protect the workflows dir, only allow specific users to modify
+      - id: permission-check
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }})
+          echo "CHANGED_FILES=$CHANGED_FILES"
+
+          if ! echo "$CHANGED_FILES" | grep -q '^\.github/workflows/'; then
+            echo "No .github/workflows changes, allow."
+            exit 0
+          fi
+
+          ALLOWED_USERS=("dante159753" "mag1c-h" "yuanzhg078")
+          
+          echo ".github changes detected, check if user is allowed..."
+          ACTOR="${{ github.actor }}"
+          echo "PR author: $ACTOR"
+
+          for u in "${ALLOWED_USERS[@]}"; do
+            if [[ "$ACTOR" == "$u" ]]; then
+              echo "Authorized user, allowing change."
+              exit 0
+            fi
+          done
+
+          echo "::error:: Only privileged users may modify .github/workflows/"
+          exit 1
+
+      - id: uptodate-check
+        run: |
+
+          if git merge-base --is-ancestor "origin/${{ github.base_ref }}" "${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}"; then
+            echo "PR branch is up-to-date with target branch, continue workflow."
+          else
+            echo "::error::PR branch is OUT-OF-DATE with target branch, stop workflow, please update your branch and try again."
+            exit 1
+          fi
+
+  lint-and-unit-tests:
+    needs: pre-check
+    uses: ./.github/workflows/lint-and-test.yml
+  
+  test-build-npu:
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.vllm_npu
+          build-args: "ENABLE_SPARSE=false"
+          tags: ucm-npu:latest
+          push: false
+          load: false
+          cache-from: type=gha,scope=npu
+          cache-to: type=gha,mode=max,scope=npu
+
+  test-build-npu-sparse:
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.vllm_npu_v0110
+          build-args: "ENABLE_SPARSE=true"
+          tags: ucm-npu-sparse:latest
+          push: false
+          load: false
+          cache-from: type=gha,scope=npu
+          cache-to: type=gha,mode=max,scope=npu
+
+  test-e2e-pc-gpu:
+    timeout-minutes: 25
+    runs-on: ["gpu-test-in-docker"]
+    needs: lint-and-unit-tests
+    permissions:
+      checks: write
+      pull-requests: write
+    steps:
+    - name: Clean repo
+      run: |
+        if [ -d "${{github.workspace}}" ]; then
+          cd ${{github.workspace}}
+          rm -rf ./*
+          rm -rf .[!.]*
+        fi
+    - uses: actions/checkout@v4
+    - name: Install Docker CLI
+      run: |
+        if ! command -v docker &> /dev/null; then
+          echo "Docker CLI not found, installing..."
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+        else
+          echo "Docker CLI already installed"
+        fi
+    - name: Generate Docker Image Version
+      id: version
+      run: |
+        DATE=$(date +%Y%m%d)
+        SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
+        REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
+        VERSION="${REF_NAME}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Docker image version: ${VERSION}"
+    - name: Build
+      run: |
+        cd ${{github.workspace}}
+        sudo -E docker build --network=host \
+          --build-arg http_proxy="${http_proxy:-}" \
+          --build-arg https_proxy="${https_proxy:-}" \
+          --build-arg ENABLE_SPARSE=false \
+          -t ucm-e2etest-online-inference:${{ steps.version.outputs.version }} \
+          -f ./docker/Dockerfile.vllm_gpu ./
+    - name: Test E2E Online Inference in Docker
+      run: |
+        sudo chmod -R 777 /workspace/test_results/
+        sudo docker run --rm \
+          --gpus all \
+          --ipc=host \
+          -v /home/models:/home/models \
+          -v /home/yanzhao/pipeline_results:/workspace/test_results \
+          ucm-e2etest-online-inference:${{ steps.version.outputs.version }} \
+          -c "cd /workspace/unified-cache-management/test && pip install -r requirements.txt && python3 -m pytest -x --stage=1 --feature=online_inference --junitxml=/workspace/test_results/${{ steps.version.outputs.version }}-online-inference.xml"
+    - name: Upload pytest results
+      uses: EnricoMi/publish-unit-test-result-action/linux@v2
+      if: (!cancelled())
+      with:
+        files: |
+          /workspace/test_results/${{ steps.version.outputs.version }}-online-inference.xml
+        check_name: Online inference test results
+    - name: Cleanup Docker Image
+      if: always()
+      run: |
+        sudo docker rmi ucm-e2etest-online-inference:${{ steps.version.outputs.version }} || true
+    - name: Cleanup Test Results
+      if: always()
+      run: |
+        sudo rm -f /workspace/test_results/${{ steps.version.outputs.version }}-online-inference.xml || true
+
+  test-e2e-sparse-gpu:
+    timeout-minutes: 25
+    runs-on: ["gpu-test-in-docker"]
+    needs: lint-and-unit-tests
+    permissions:
+      checks: write
+      pull-requests: write
+    steps:
+    - name: Clean repo
+      run: |
+        if [ -d "${{github.workspace}}" ]; then
+          cd ${{github.workspace}}
+          rm -rf ./*
+          rm -rf .[!.]*
+        fi
+    - uses: actions/checkout@v4
+    - name: Install Docker CLI
+      run: |
+        if ! command -v docker &> /dev/null; then
+          echo "Docker CLI not found, installing..."
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+        else
+          echo "Docker CLI already installed"
+        fi
+    - name: Generate Docker Image Version
+      id: version
+      run: |
+        DATE=$(date +%Y%m%d)
+        SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
+        REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
+        VERSION="${REF_NAME}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Docker image version: ${VERSION}"
+    - name: Build
+      run: |
+        cd ${{github.workspace}}
+        sudo -E docker build --network=host \
+          --build-arg http_proxy="${http_proxy:-}" \
+          --build-arg https_proxy="${https_proxy:-}" \
+          --build-arg ENABLE_SPARSE=true \
+          -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
+          -f ./docker/Dockerfile.vllm_gpu_v0110 ./
+    - name: Test E2E in Docker
+      run: |
+        sudo chmod -R 777 /workspace/test_results/
+        sudo docker run --rm \
+          --gpus all \
+          --ipc=host \
+          -v /home/models:/home/models \
+          -v /home/yanzhao/pipeline_results:/workspace/test_results \
+          ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
+          -c "cd /workspace/unified-cache-management/test && pip install -r requirements.txt && python3 -m pytest -x --stage=1 --feature=online_inference_sparse --junitxml=/workspace/test_results/${{ steps.version.outputs.version }}-online-inference-sparse.xml"
+    - name: Upload pytest results
+      uses: EnricoMi/publish-unit-test-result-action/linux@v2
+      if: (!cancelled())
+      with:
+        files: |
+          /workspace/test_results/${{ steps.version.outputs.version }}-online-inference-sparse.xml
+        check_name: Sparse attention test results
+    - name: Cleanup Docker Image
+      if: always()
+      run: |
+        sudo docker rmi ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} || true
+    - name: Cleanup Test Results
+      if: always()
+      run: |
+        sudo rm -f /workspace/test_results/${{ steps.version.outputs.version }}-online-inference-sparse.xml || true
+
+  test-e2e-sparse-offline-gpu:
+    runs-on: ["gpu-test-in-docker"]
+    needs: lint-and-unit-tests
+    permissions:
+      checks: write
+      pull-requests: write
+    steps:
+    - name: Clean repo
+      run: |
+        if [ -d "${{github.workspace}}" ]; then
+          cd ${{github.workspace}}
+          rm -rf ./*
+          rm -rf .[!.]*
+        fi
+    - uses: actions/checkout@v4
+    - name: Install Docker CLI
+      run: |
+        if ! command -v docker &> /dev/null; then
+          echo "Docker CLI not found, installing..."
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+        else
+          echo "Docker CLI already installed"
+        fi
+    - name: Generate Docker Image Version
+      id: version
+      run: |
+        DATE=$(date +%Y%m%d)
+        SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
+        REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
+        VERSION="${REF_NAME}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Docker image version: ${VERSION}"
+    - name: Build
+      run: |
+        cd ${{github.workspace}}
+        sudo -E docker build --network=host \
+          --build-arg http_proxy="${http_proxy:-}" \
+          --build-arg https_proxy="${https_proxy:-}" \
+          --build-arg ENABLE_SPARSE=true \
+          -t ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
+          -f ./docker/Dockerfile.vllm_gpu_v0110 ./
+    - name: Test E2E in Docker
+      run: |
+        sudo chmod -R 777 /workspace/test_results/
+        sudo docker run --rm \
+          --gpus all \
+          --ipc=host \
+          -v /home/models:/home/models \
+          -v /home/yanzhao/pipeline_results:/workspace/test_results \
+          ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} \
+          -c "cd /workspace/unified-cache-management/test && pip install -r requirements.txt && python3 -m pytest -x --stage=1 --feature=offline_inference_sparse --junitxml=/workspace/test_results/${{ steps.version.outputs.version }}-offline-inference-sparse.xml"
+    - name: Upload pytest results
+      uses: EnricoMi/publish-unit-test-result-action/linux@v2
+      if: (!cancelled())
+      with:
+        files: |
+          /workspace/test_results/${{ steps.version.outputs.version }}-offline-inference-sparse.xml
+        check_name: Sparse attention test results
+    - name: Cleanup Docker Image
+      if: always()
+      run: |
+        sudo docker rmi ucm-e2etest-gpu-sparse:${{ steps.version.outputs.version }} || true
+    - name: Cleanup Test Results
+      if: always()
+      run: |
+        sudo rm -f /workspace/test_results/${{ steps.version.outputs.version }}-offline-inference-sparse.xml || true
+

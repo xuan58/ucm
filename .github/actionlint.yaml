@@ -1,0 +1,7 @@
+self-hosted-runner:
+  # Labels of self-hosted runner in array of strings.
+  labels:
+    - default
+    - gpu
+    - npu
+    - gpu-test-in-docker

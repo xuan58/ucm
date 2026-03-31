@@ -1,0 +1,181 @@
+namespace UC::CacheStore {
+
+LoadQueue::~LoadQueue()
+{
+    stop_.store(true);
+    if (dispatcher_.joinable()) { dispatcher_.join(); }
+    if (transfer_.joinable()) { transfer_.join(); }
+}
+
+Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer* buffer)
+{
+    failureSet_ = failureSet;
+    buffer_ = buffer;
+    backend_ = config.storeBackend;
+    deviceId_ = config.deviceId;
+    tensorSizes_ = config.tensorSizes;
+    streamNumber_ = config.streamNumber;
+    cpuAffinityCores_ = config.cpuAffinityCores;
+    waiting_.Setup(config.waitingQueueDepth);
+    running_.Setup(config.runningQueueDepth);
+    holder_.reserve(1024);
+    dispatcher_ = std::thread{&LoadQueue::DispatchStage, this};
+    std::promise<Status> started;
+    auto fut = started.get_future();
+    transfer_ = std::thread{&LoadQueue::TransferStage, this, std::ref(started)};
+    return fut.get();
+}
+
+void LoadQueue::Submit(TaskPtr task, WaiterPtr waiter)
+{
+    waiter->Up();
+    auto success = waiting_.TryPush({task, waiter});
+    if (success) { return; }
+    UC_ERROR("Waiting queue full, submit load task({}) failed.", task->id);
+    failureSet_->Insert(task->id);
+    waiter->Done();
+}
+
+void LoadQueue::DispatchStage()
+{
+    if (!cpuAffinityCores_.empty()) {
+        auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+        if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
+    }
+    waiting_.ConsumerLoop(stop_, &LoadQueue::DispatchOneTask, this);
+}
+
+void LoadQueue::DispatchOneTask(TaskPair&& pair)
+{
+    auto& task = pair.first;
+    auto& waiter = pair.second;
+    if (failureSet_->Contains(task->id)) {
+        waiter->Done();
+        return;
+    }
+    auto tp = waiter->startTp;
+    auto tpWait = NowTime::Now();
+    Detail::TaskDesc backendTaskDesc;
+    backendTaskDesc.brief = "Backend2Cache";
+    const auto nShard = task->desc.size();
+    UC_DEBUG("Try to load ({}) shards.", nShard);
+    std::vector<size_t> backendTaskIndex;
+    backendTaskIndex.reserve(nShard);
+    std::vector<ShardTask> shardTasks(nShard);
+    for (size_t i = 0; i < nShard; i++) {
+        auto& shard = task->desc[i];
+        auto& shardTask = shardTasks[i];
+        shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index);
+        shardTask.backendTaskHandle = 0;
+        if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
+            backendTaskDesc.push_back(
+                Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}});
+            backendTaskIndex.emplace_back(i);
+        }
+        shardTask.taskHandle = task->id;
+        shardTask.shard = std::move(shard);
+        shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;
+    }
+    auto tpMakeBuffer = NowTime::Now();
+    if (!backendTaskDesc.empty()) {
+        auto res = backend_->Load(std::move(backendTaskDesc));
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
+            failureSet_->Insert(task->id);
+            waiter->Done();
+            return;
+        }
+        for (const auto& i : backendTaskIndex) { shardTasks[i].backendTaskHandle = res.Value(); }
+    }
+    for (size_t i = 0; i < nShard; i++) { running_.Push(std::move(shardTasks[i])); }
+    auto tpBackend = NowTime::Now();
+    UC_DEBUG("Cache task({}) wait={:.3f}ms, mk_buf={:.3f}ms, back={:.3f}ms.", task->id,
+             (tpWait - tp) * 1e3, (tpMakeBuffer - tpWait) * 1e3, (tpBackend - tpMakeBuffer) * 1e3);
+}
+
+void LoadQueue::TransferStage(std::promise<Status>& started)
+{
+    CopyStream stream;
+    auto s = stream.Setup(deviceId_, streamNumber_);
+    started.set_value(s);
+    if (s.Failure()) [[unlikely]] { return; }
+    if (!cpuAffinityCores_.empty()) {
+        s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+        if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
+    }
+    running_.ConsumerLoop(stop_, &LoadQueue::TransferOneTask, this, stream);
+}
+
+void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
+{
+    if (failureSet_->Contains(task.taskHandle)) {
+        if (task.waiter) { task.waiter->Done(); }
+        return;
+    }
+    auto s = Status::OK();
+    do {
+        s = WaitBackendTaskReady(task);
+        if (s.Failure()) [[unlikely]] { break; }
+        s = HostToDeviceScatterAsync(stream.NextStream(), task.bufferHandle.Data(),
+                                     task.shard.addrs.data());
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to do H2D batch async for task({}).", s, task.taskHandle);
+            break;
+        }
+        if (!task.waiter) {
+            holder_.push_back(std::move(task));
+            return;
+        }
+        s = stream.Synchronize();
+        holder_.clear();
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
+            break;
+        }
+    } while (0);
+    if (s.Failure()) [[unlikely]] { failureSet_->Insert(task.taskHandle); }
+    if (task.waiter) { task.waiter->Done(); }
+}
+
+Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
+{
+    if (task.bufferHandle.Ready()) { return Status::OK(); }
+    if (!task.bufferHandle.Owner()) {
+        for (;;) {
+            if (failureSet_->Contains(task.taskHandle)) { return Status::Error(); }
+            if (task.bufferHandle.Ready()) { return Status::OK(); }
+            std::this_thread::yield();
+        }
+    }
+    if (task.backendTaskHandle > finishedBackendTaskHandle_) {
+        auto s = backend_->Wait(task.backendTaskHandle);
+        finishedBackendTaskHandle_ = task.backendTaskHandle;
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
+                     task.taskHandle);
+            return s;
+        }
+    }
+    task.bufferHandle.MarkReady();
+    return Status::OK();
+}
+
+Status LoadQueue::HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream, void* host,
+                                           void** device)
+{
+    const auto number = tensorSizes_.size();
+    for (size_t i = 0, offset = 0; i < number; i++) {
+        auto pHost = (void*)(((int8_t*)host) + offset);
+        auto pDevice = device[i];
+        auto size = tensorSizes_[i];
+        auto s = stream->HostToDeviceAsync(pHost, pDevice, size);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to do H2D({}) batch({}/{}) async.", s, size, i, number);
+            return s;
+        }
+        offset += size;
+    }
+    return Status::OK();
+}
+
+}  // namespace UC::CacheStore
