@@ -96,7 +96,7 @@ In addition, we provide cross-layer similarity heatmaps for multiple models, spl
 
 ![DeepSeek-R1 61 layers attention distribution](docs/figures/DSR1-61layers.png)
 
-### 2) 90% Cumulative Attention Token Ratio
+### 2) DeepSeek-R1: 90% Cumulative Attention Token Ratio
 
 #### Needle-in-a-Haystack
 
@@ -108,14 +108,19 @@ In addition, we provide cross-layer similarity heatmaps for multiple models, spl
 
 ### 3) Cross-Layer Similarity Heatmaps
 
-#### DeepSeek Family
+#### DeepSeek-R1
 
 ![DeepSeek-R1 cross-layer similarity heatmap](docs/figures/DSR1.png)
 
-#### Qwen Family
+#### Qwen Models
 
+##### Qwen3-4B
 ![Qwen3-4B cross-layer similarity heatmap](docs/figures/qwen3-4B.png)
+
+##### Qwen3-32B
 ![Qwen3-32B cross-layer similarity heatmap](docs/figures/qwen3-32B.png)
+
+##### Qwen3-Coder
 ![Qwen3-Coder cross-layer similarity heatmap](docs/figures/qwen3-coder.png)
 
 ---
