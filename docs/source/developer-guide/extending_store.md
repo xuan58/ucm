@@ -288,7 +288,3 @@ Production-ready implementation with maximum performance and resource control.
 
 - **Issues**: [Report bugs](https://github.com/anonymous/anonymous-repo/issues)
 - **Examples**: See [`ucm/store/test/e2e`](https://github.com/anonymous/anonymous-repo/tree/develop/ucm/store/test/e2e)
-
----
-
-**Next Steps**: Once your Store is implemented, see [Prefix Cache Guide](https://ucm.readthedocs.io/en/latest/user-guide/prefix-cache/index.html) for pipeline configuration.
