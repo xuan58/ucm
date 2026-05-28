@@ -7,7 +7,6 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "Unified Cache Manager"
-copyright = "2025, Unified Cache Manager Team"
 release = ""
 
 # -- General configuration ---------------------------------------------------
