@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-| <a href="https://ucm.readthedocs.io/en/latest"><b>Documentation</b></a> | <a href="README_zh.md"><b>中文</b></a> |
+| <a href="README_zh.md"><b>中文</b></a> |
 </p>
 
 <div align="center">
@@ -68,12 +68,6 @@ in either a local filesystem for single-machine scenarios or through NFS mount p
 - Sparse Attention
 - Sparse Attention Offload
 - Heterogeneous PD Disaggregation
-
----
-
-## Quick Start
-
-please refer to [Quick Start for vLLM](https://ucm.readthedocs.io/en/latest/getting-started/quickstart_vllm.html) and [Quick Start for vLLM-Ascend](https://ucm.readthedocs.io/en/latest/getting-started/quickstart_vllm_ascend.html).
 
 ---
 
