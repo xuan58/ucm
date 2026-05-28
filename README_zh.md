@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-| <a href="https://ucm.readthedocs.io/en/latest"><b>文档</b></a> | <a href="README.md"><b>EN</b></a> |
+| <a href="README.md"><b>EN</b></a> |
 </p>
 
 <div align="center">
@@ -48,12 +48,6 @@ KVStoreBase有助于实现稀疏算法与外部存储的解耦。它定义了与
 - 稀疏注意力
 - 稀疏注意力卸载
 - 异构PD分离
-
----
-
-## 快速开始
-
-请参考 [快速开始_vLLM](https://ucm.readthedocs.io/en/latest/getting-started/quickstart_vllm.html) 和 [快速开始_vLLM-Ascend](https://ucm.readthedocs.io/en/latest/getting-started/quickstart_vllm_ascend.html).
 
 ---
 
