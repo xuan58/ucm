@@ -211,7 +211,6 @@ setup(
     name="uc-manager",
     version="0.4.0",
     description="Unified Cache Management",
-    author="Unified Cache Team",
     packages=[
         pkg
         for pkg in (find_packages() + [""])
