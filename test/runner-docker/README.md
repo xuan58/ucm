@@ -8,7 +8,7 @@
 # initialize lock files for gpu allocation
 
 ``` bash
-LOCK_DIR="${1:-/home/yanzhao/pipeline_results/gpu_locks}"
+LOCK_DIR="${1:-/home/pipeline_results/gpu_locks}"
 GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
 
 if [ "$GPU_COUNT" -eq 0 ]; then
@@ -45,7 +45,7 @@ docker run \
         -e https_proxy="http://127.0.0.1:7890" \
         -v /home/models:/home/models \
         -v /var/run/docker.sock:/var/run/docker.sock \
-        -v /home/yanzhao/pipeline_results:/workspace/test_results \
+        -v /home/pipeline_results:/workspace/test_results \
         --name pipeline-host-docker-a \
         vllm-openai-pipeline:0.9.2-proxy
 ```
