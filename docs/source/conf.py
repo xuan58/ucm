@@ -8,7 +8,6 @@
 
 project = "Unified Cache Manager"
 copyright = "2025, Unified Cache Manager Team"
-author = "Unified Cache Manager Team"
 release = ""
 
 # -- General configuration ---------------------------------------------------
